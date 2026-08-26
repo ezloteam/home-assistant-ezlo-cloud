@@ -99,8 +99,14 @@ def _extract_error_message(response: httpx.Response) -> str:
 
 
 def _classify_status_error(error: httpx.HTTPStatusError) -> EzloAuthError | None:
-    """Return an EzloAuthError if the HTTP status indicates auth failure."""
-    if error.response.status_code in (401, 403):
+    """Return an EzloAuthError if the HTTP status indicates auth failure.
+
+    409 is the backend's ``device_already_bound`` answer (this Home Assistant
+    instance is bound to a different account). It is surfaced as an auth
+    error so the flows run it through ``classify_login_error`` and show the
+    dedicated message instead of a generic "unexpected response".
+    """
+    if error.response.status_code in (401, 403, 409):
         return EzloAuthError(_extract_error_message(error.response))
     return None
 
@@ -256,6 +262,43 @@ async def signup(
         trial_ends_at=data.get("trial_ends_at"),
         checkout_url=data.get("checkout_url"),
     )
+
+
+async def logout(
+    hass: HomeAssistant,
+    *,
+    auth_token: str,
+    api_uri: str = DEFAULT_API_URI,
+) -> bool:
+    """Tell the backend this instance is logging out.
+
+    Releases the server-side binding between this Home Assistant instance and
+    the account (so a different account can log in on this box) and revokes
+    the tunnel token. Best-effort: the local logout must never be blocked by
+    the backend, so every failure is logged and reported as ``False`` rather
+    than raised.
+    """
+    client = get_async_client(hass)
+    try:
+        response = await client.post(
+            f"{_auth_api_url(api_uri)}/logout",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            timeout=5,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as err:
+        # 401 = token already invalid, 404 = older backend without the route:
+        # nothing to release in either case.
+        _LOGGER.debug(
+            "Backend logout returned %s: %s",
+            err.response.status_code,
+            _extract_error_message(err.response),
+        )
+        return False
+    except httpx.HTTPError as err:
+        _LOGGER.debug("Backend logout unreachable: %s", err)
+        return False
+    return True
 
 
 # ── Subscription status ─────────────────────────────────────────────

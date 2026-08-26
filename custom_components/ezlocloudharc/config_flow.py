@@ -24,7 +24,9 @@ from .options_flow import (
     EzloOptionsFlowHandler,
     FlowState,
     classify_login_error,
+    classify_signup_error,
     entry_state,
+    release_backend_binding,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -144,8 +146,7 @@ class EzloHACloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self.hass, username, email, password, system_uuid
                 )
             except EzloAuthError as err:
-                errors["base"] = "signup_failed"
-                signup_error_detail = str(err)
+                errors["base"], signup_error_detail = classify_signup_error(str(err))
             except EzloApiUnreachableError as err:
                 errors["base"] = "network_error"
                 signup_error_detail = str(err)
@@ -394,6 +395,9 @@ class EzloHACloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Clear credentials and reload (the entry idles logged-out)."""
         entry = self._get_reconfigure_entry()
+        await release_backend_binding(
+            self.hass, entry.data, entry.data.get(CONF_API_URI) or DEFAULT_API_URI
+        )
         return self.async_update_reload_and_abort(
             entry,
             data_updates={

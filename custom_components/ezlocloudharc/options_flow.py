@@ -12,6 +12,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.instance_id import async_get as async_get_instance_id
 
 from .api import (
@@ -20,6 +21,7 @@ from .api import (
     UserDict,
     authenticate,
     get_subscription_status,
+    logout,
     signup,
 )
 from .const import (
@@ -73,19 +75,18 @@ def entry_state(data: Mapping[str, Any]) -> FlowState:
 def classify_login_error(error: str | None) -> tuple[str, str]:
     """Map a backend login-failure string to a (translation key, detail) tuple.
 
-    The backend currently overloads ``POST /api/auth/login`` to also check
-    the user's FRP subdomain binding, so a credential-shaped endpoint can
-    return device-binding errors. Without classification the UI would
-    mislabel every failure as "Invalid username or password".
+    ``POST /api/auth/login`` and ``/signup`` also enforce the binding between
+    this Home Assistant instance and an account: a 409 whose message carries
+    the ``device_already_bound`` code means the instance is linked to a
+    different account. Without classification the UI would mislabel every
+    failure as "Invalid username or password".
     """
     if not error:
         return "unknown", ""
 
     lower = error.lower()
 
-    if "device_already_bound" in lower or (
-        "subdomain" in lower and "already taken" in lower
-    ):
+    if "device_already_bound" in lower:
         return (
             "device_already_bound",
             "This Home Assistant installation is already linked to a"
@@ -103,6 +104,37 @@ def classify_login_error(error: str | None) -> tuple[str, str]:
         return "invalid_credentials", error
 
     return "unknown", error
+
+
+def classify_signup_error(error: str | None) -> tuple[str, str]:
+    """Map a backend signup-failure string to a (translation key, detail) tuple.
+
+    Signup enforces the same instance binding as login, so a
+    ``device_already_bound`` answer gets its dedicated message; anything else
+    is a generic signup failure.
+    """
+    key, detail = classify_login_error(error)
+    if key == "device_already_bound":
+        return key, detail
+    return "signup_failed", error or ""
+
+
+async def release_backend_binding(
+    hass: HomeAssistant, data: Mapping[str, Any], api_uri: str
+) -> None:
+    """Best-effort ``POST /api/auth/logout`` before clearing local credentials.
+
+    Releases this HA instance's binding on the backend so another account can
+    log in here afterwards. Skipped when there is no token to present.
+    """
+    token = data.get("auth_token")
+    if not token:
+        return
+    if not await logout(hass, auth_token=str(token), api_uri=api_uri):
+        _LOGGER.info(
+            "Backend did not acknowledge logout; the instance binding may need "
+            "to be released by support before another account can log in here"
+        )
 
 
 def compute_trial_days(trial_ends_at: str | None) -> int | None:
@@ -316,6 +348,9 @@ class EzloOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Handle manual logout action."""
+        await release_backend_binding(
+            self.hass, self._config_entry.data, self._get_api_uri()
+        )
         self.hass.config_entries.async_update_entry(
             self._config_entry, data=_logged_out_data(self._config_entry.data)
         )
@@ -401,8 +436,7 @@ class EzloOptionsFlowHandler(config_entries.OptionsFlow):
                     api_uri=self._get_api_uri(),
                 )
             except EzloAuthError as err:
-                errors["base"] = "signup_failed"
-                signup_error_detail = str(err)
+                errors["base"], signup_error_detail = classify_signup_error(str(err))
             except EzloApiUnreachableError as err:
                 errors["base"] = "network_error"
                 signup_error_detail = str(err)
