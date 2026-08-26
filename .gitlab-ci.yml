@@ -17,7 +17,7 @@ sync-to-github:
     - master
   script:
     # Configure git
-    - git config --global user.email "ci@ezlo.com"
+    - git config --global user.email "integrator@ezlo.com"
     - git config --global user.name "eZLO CI"
 
     # Add GitHub remote

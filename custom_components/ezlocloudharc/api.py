@@ -265,11 +265,17 @@ async def get_subscription_status(
     hass: HomeAssistant,
     user_uuid: str,
     *,
+    auth_token: str,
     api_uri: str = DEFAULT_API_URI,
 ) -> SubscriptionStatusResult:
-    """Fetch the live subscription status for a user.
+    """Fetch the live subscription status for the authenticated user.
+
+    The backend resolves the user from the Bearer token; ``user_uuid`` is
+    still sent as a query parameter for compatibility with older servers
+    and must be the uuid embedded in ``auth_token``.
 
     Raises:
+        EzloAuthError: the token was rejected (401/403) — re-login needed.
         EzloApiUnreachableError: network failure.
         EzloApiUnexpectedResponseError: bad response shape or missing data.
     """
@@ -278,10 +284,13 @@ async def get_subscription_status(
         response = await client.get(
             f"{_api_url(api_uri)}/subscription/status",
             params={"user_uuid": user_uuid},
+            headers={"Authorization": f"Bearer {auth_token}"},
             timeout=5,
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as err:
+        if (auth_err := _classify_status_error(err)) is not None:
+            raise auth_err from err
         raise EzloApiUnexpectedResponseError(
             f"http_{err.response.status_code}: {_extract_error_message(err.response)}"
         ) from err

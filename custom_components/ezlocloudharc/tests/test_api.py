@@ -27,6 +27,7 @@ from custom_components.ezlocloudharc.exceptions import (
 )
 
 USER_UUID = "f960d12e-4ccb-4f0a-b37f-0abee2cd9717"
+AUTH_TOKEN = "test-auth-token"
 EZLO_USER_ID = 15047842
 
 
@@ -289,7 +290,7 @@ async def test_get_subscription_status_success(hass: HomeAssistant) -> None:
     with patch(
         "custom_components.ezlocloudharc.api.get_async_client", return_value=client
     ):
-        result = await get_subscription_status(hass, USER_UUID)
+        result = await get_subscription_status(hass, USER_UUID, auth_token=AUTH_TOKEN)
 
     assert isinstance(result, SubscriptionStatusResult)
     assert result.status == "feature_harc"
@@ -297,6 +298,40 @@ async def test_get_subscription_status_success(hass: HomeAssistant) -> None:
     assert result.is_trial is False
     assert result.trial_ends_at == ""
     assert result.subscribe_url == ""
+
+
+async def test_get_subscription_status_sends_bearer_token(hass: HomeAssistant) -> None:
+    """The status call authenticates with the JWT — the backend resolves the user from it."""
+    response = _mock_response(
+        json_data={"data": {"status": "feature_harc", "is_active": True}}
+    )
+    client = _patch_client(response=response)
+    with patch(
+        "custom_components.ezlocloudharc.api.get_async_client", return_value=client
+    ):
+        await get_subscription_status(hass, USER_UUID, auth_token=AUTH_TOKEN)
+
+    kwargs = client.get.await_args.kwargs
+    assert kwargs["headers"] == {"Authorization": f"Bearer {AUTH_TOKEN}"}
+    assert kwargs["params"] == {"user_uuid": USER_UUID}
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_get_subscription_status_rejected_token_raises_auth_error(
+    hass: HomeAssistant, status_code: int
+) -> None:
+    """401/403 means the token was rejected — surface EzloAuthError, not a generic error."""
+    response = _mock_response(
+        json_data={"error": "invalid or expired token"}, status_code=status_code
+    )
+    client = _patch_client(response=response)
+    with (
+        patch(
+            "custom_components.ezlocloudharc.api.get_async_client", return_value=client
+        ),
+        pytest.raises(EzloAuthError, match="invalid or expired token"),
+    ):
+        await get_subscription_status(hass, USER_UUID, auth_token=AUTH_TOKEN)
 
 
 async def test_get_subscription_status_inactive_carries_subscribe_url(
@@ -320,7 +355,7 @@ async def test_get_subscription_status_inactive_carries_subscribe_url(
     with patch(
         "custom_components.ezlocloudharc.api.get_async_client", return_value=client
     ):
-        result = await get_subscription_status(hass, USER_UUID)
+        result = await get_subscription_status(hass, USER_UUID, auth_token=AUTH_TOKEN)
 
     assert result.status == "none"
     assert result.is_active is False
@@ -339,7 +374,7 @@ async def test_get_subscription_status_empty_data_raises(
         ),
         pytest.raises(EzloApiUnexpectedResponseError),
     ):
-        await get_subscription_status(hass, USER_UUID)
+        await get_subscription_status(hass, USER_UUID, auth_token=AUTH_TOKEN)
 
 
 async def test_get_subscription_status_404_raises_unexpected_response(
@@ -354,7 +389,7 @@ async def test_get_subscription_status_404_raises_unexpected_response(
         ),
         pytest.raises(EzloApiUnexpectedResponseError, match="http_404"),
     ):
-        await get_subscription_status(hass, USER_UUID)
+        await get_subscription_status(hass, USER_UUID, auth_token=AUTH_TOKEN)
 
 
 async def test_get_subscription_status_network_error_raises_unreachable(
@@ -368,7 +403,7 @@ async def test_get_subscription_status_network_error_raises_unreachable(
         ),
         pytest.raises(EzloApiUnreachableError),
     ):
-        await get_subscription_status(hass, USER_UUID)
+        await get_subscription_status(hass, USER_UUID, auth_token=AUTH_TOKEN)
 
 
 # ── api_uri override ─────────────────────────────────────────────────
@@ -415,6 +450,8 @@ async def test_get_subscription_status_uses_api_uri_override(
     with patch(
         "custom_components.ezlocloudharc.api.get_async_client", return_value=client
     ):
-        await get_subscription_status(hass, USER_UUID, api_uri=_DEV_API)
+        await get_subscription_status(
+            hass, USER_UUID, auth_token=AUTH_TOKEN, api_uri=_DEV_API
+        )
 
     assert client.get.await_args.args[0] == f"{_DEV_API}/api/subscription/status"

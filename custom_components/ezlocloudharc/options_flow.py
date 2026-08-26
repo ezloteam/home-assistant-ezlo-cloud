@@ -517,8 +517,15 @@ class EzloOptionsFlowHandler(config_entries.OptionsFlow):
 
             try:
                 status = await get_subscription_status(
-                    self.hass, user_uuid, api_uri=self._get_api_uri()
+                    self.hass, user_uuid, auth_token=token, api_uri=self._get_api_uri()
                 )
+            except EzloAuthError as err:
+                # The token itself was rejected; polling again will not change that.
+                _LOGGER.warning(
+                    "Subscription poll stopped: token rejected (%s). Please log in again",
+                    err,
+                )
+                return
             except EzloError:
                 continue
 
@@ -562,9 +569,12 @@ class EzloOptionsFlowHandler(config_entries.OptionsFlow):
                     subscribe_url=str(cached.get("subscribe_url", "")),
                 )
 
+        token = self._config_entry.data.get("auth_token")
+        if not token:
+            return None
         try:
             result = await get_subscription_status(
-                self.hass, user_uuid, api_uri=self._get_api_uri()
+                self.hass, user_uuid, auth_token=token, api_uri=self._get_api_uri()
             )
         except EzloError as err:
             _LOGGER.debug("subscription status fetch failed: %s", err)

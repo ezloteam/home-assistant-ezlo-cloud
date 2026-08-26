@@ -285,11 +285,14 @@ class EzloHACloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Fetch the central subscribe URL for the reconfigure entry, or ''."""
         user = entry.data.get("user") or {}
         uuid = user.get("uuid")
-        if not uuid:
+        token = entry.data.get("auth_token")
+        if not uuid or not token:
             return ""
         api_uri = entry.data.get(CONF_API_URI) or DEFAULT_API_URI
         try:
-            status = await get_subscription_status(self.hass, uuid, api_uri=api_uri)
+            status = await get_subscription_status(
+                self.hass, uuid, auth_token=token, api_uri=api_uri
+            )
         except EzloError:
             return ""
         return status.subscribe_url
